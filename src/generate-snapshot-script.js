@@ -12,8 +12,12 @@ module.exports = async function (cache, options) {
   // collecting abstract syntax trees for use in generating the script in
   // phase 2.
   const moduleASTs = {}
-  const requiredModulePaths = [options.mainPath]
+  const requiredModulePaths = options.mainPaths || [options.mainPath]
   const includedFilePaths = new Set(requiredModulePaths)
+
+  if (!options.transpile) {
+    options.transpile = () => undefined
+  }
 
   while (requiredModulePaths.length > 0) {
     const filePath = requiredModulePaths.shift()
@@ -22,11 +26,24 @@ module.exports = async function (cache, options) {
       relativeFilePath = './' + relativeFilePath
     }
     if (!moduleASTs[relativeFilePath]) {
-      const source = fs.readFileSync(filePath, 'utf8')
+      let source = await options.transpile({requiredModulePath: filePath})
+      if (source === undefined) {
+        source = await new Promise((resolve, reject) => {
+          fs.readFile(filePath, {encoding: 'utf8'}, (err, data) => {
+            if (err) {
+              reject(err)
+            } else {
+              resolve(data)
+            }
+          })
+        })
+      }
+
       let foundRequires = []
       const transform = new FileRequireTransform({
         filePath,
         source,
+        extensions: options.extensions,
         baseDirPath: options.baseDirPath,
         didFindRequire: (unresolvedPath, resolvedPath) => {
           if (options.shouldExcludeModule({requiringModulePath: filePath, requiredModulePath: resolvedPath})) {
@@ -65,7 +82,6 @@ module.exports = async function (cache, options) {
 
       moduleASTs[relativeFilePath] = `function (exports, module, __filename, __dirname, require, define) {\n${transformedSource}\n}`
 
-      const resolvedRequirePaths = foundRequires.map(r => r.resolvedPath)
       for (let i = 0; i < foundRequires.length; i++) {
         const {resolvedPath} = foundRequires[i]
         requiredModulePaths.push(resolvedPath)
